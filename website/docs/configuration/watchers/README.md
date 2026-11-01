@@ -231,7 +231,7 @@ services:
 
 The file is read when WUD starts. Restart or recreate WUD after changing the configuration; monitored containers do not need to be restarted or recreated to apply it.
 
-Enabling digest watching uses WUD's existing SHA-256 digest comparison. When both the local and selected remote digests are available, the following rules apply:
+Enabling digest watching uses WUD's existing SHA-256 digest comparison. WUD's existing manifest/index equivalence checks still apply, so different raw hashes do not necessarily mean different images. When both the local and selected remote digests are available, the following rules apply:
 
 | Local tag | Selected remote tag | Digest comparison | Candidate update |
 | :--- | :--- | :--- | :--- |
