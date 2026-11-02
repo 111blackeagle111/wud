@@ -87,7 +87,7 @@ export interface DockerWatcherConfiguration extends ComponentConfiguration {
     watchall: boolean;
     watchdigest?: any;
     watchdigestdefault?: boolean;
-    containeroptions?: Record<string, { watchdigest?: boolean }>;
+    containerdigests?: Record<string, { watchdigest?: boolean }>;
     watchevents: boolean;
     watchatstart: boolean;
     delay?: string;
@@ -591,12 +591,13 @@ export class Docker extends Watcher {
     private isWatching = false;
 
     getConfigurationSchema() {
-        const containerOptionsSchema = this.joi
+        const containerDigestsSchema = this.joi
             .object()
             .pattern(
                 /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/,
                 this.joi.object({ watchdigest: this.joi.boolean().strict() }),
-            );
+            )
+            .strict();
         return joi.object().keys({
             socket: this.joi.string().default('/var/run/docker.sock'),
             host: this.joi.string(),
@@ -610,20 +611,26 @@ export class Docker extends Watcher {
             watchall: this.joi.boolean().default(false),
             watchdigest: this.joi.any(),
             watchdigestdefault: this.joi.boolean().optional(),
-            containeroptions: this.joi.string().custom((value, helpers) => {
-                try {
-                    const parsed = JSON.parse(value);
-                    const validated = containerOptionsSchema.validate(parsed, {
-                        convert: false,
-                    });
-                    if (validated.error) {
+            containerdigests: this.joi.alternatives().try(
+                containerDigestsSchema,
+                this.joi.string().custom((value, helpers) => {
+                    try {
+                        const parsed = JSON.parse(value);
+                        const validated = containerDigestsSchema.validate(
+                            parsed,
+                            {
+                                convert: false,
+                            },
+                        );
+                        if (validated.error) {
+                            return helpers.error('any.invalid');
+                        }
+                        return validated.value;
+                    } catch {
                         return helpers.error('any.invalid');
                     }
-                    return validated.value;
-                } catch {
-                    return helpers.error('any.invalid');
-                }
-            }),
+                }),
+            ),
             watchevents: this.joi.boolean().default(true),
             watchatstart: this.joi.boolean().default(true),
             delay: this.joi.string().optional(),
@@ -1575,26 +1582,28 @@ export class Docker extends Watcher {
         isSemver: boolean,
         registryProvider?: Registry,
         imageName?: string,
-    ): boolean | undefined {
+    ): boolean {
         const label = labels[wudWatchDigest];
         if (label !== undefined && label !== '') {
             return label.toLowerCase() === 'true';
         }
         const central =
-            this.configuration.containeroptions?.[containerName]?.watchdigest;
+            this.configuration.containerdigests?.[containerName]?.watchdigest;
         if (central !== undefined) {
             return central;
         }
         if (isSemver) {
             return false;
         }
-        return registryProvider
-            ? registryProvider.shouldWatchDigest(
-                  undefined,
-                  imageName,
-                  this.configuration.watchdigestdefault,
-              )
-            : this.configuration.watchdigestdefault;
+        return (
+            (registryProvider
+                ? registryProvider.shouldWatchDigest(
+                      undefined,
+                      imageName,
+                      this.configuration.watchdigestdefault,
+                  )
+                : this.configuration.watchdigestdefault) ?? false
+        );
     }
 
     /**
@@ -1911,13 +1920,6 @@ export class Docker extends Watcher {
         const containerInStore = isOneshot()
             ? undefined
             : storeContainer.getContainer(containerId);
-        // Partial Docker payloads omit labels; an explicit empty object clears them.
-        const actualContainerLabels =
-            container.Config?.Labels ??
-            container.Labels ??
-            container.labels ??
-            containerInStore?.labels ??
-            {};
         if (
             !options?.forceRefresh &&
             containerInStore !== undefined &&
@@ -2017,14 +2019,13 @@ export class Docker extends Watcher {
                     containerInStore.image?.registry?.url,
                     getRegistries(),
                 );
-                const watchDigest =
-                    this.resolveWatchDigest(
-                        containerInStore.name,
-                        actualContainerLabels,
-                        containerInStore.image?.tag?.semver,
-                        registryProvider,
-                        containerInStore.image?.name,
-                    ) ?? false;
+                const watchDigest = this.resolveWatchDigest(
+                    containerInStore.name,
+                    containerLabels,
+                    containerInStore.image?.tag?.semver,
+                    registryProvider,
+                    containerInStore.image?.name,
+                );
                 if (
                     containerInStore.image?.digest &&
                     containerInStore.image.digest.watch !== watchDigest
@@ -2166,8 +2167,8 @@ export class Docker extends Watcher {
         );
         const isSemver = parsedTag !== null && parsedTag !== undefined;
         const watchDigest = this.resolveWatchDigest(
-            containerName || containerInStore?.name,
-            actualContainerLabels,
+            containerName,
+            containerLabels,
             isSemver,
             registryProvider,
             parsedImage.path,
@@ -2211,7 +2212,7 @@ export class Docker extends Watcher {
                 variant,
                 created,
             },
-            labels: actualContainerLabels,
+            labels: containerLabels,
             snoozedVersion: containerInStore?.snoozedVersion,
             snoozedUntil: containerInStore?.snoozedUntil,
             result: (options?.forceRefresh
